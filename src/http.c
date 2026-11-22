@@ -143,7 +143,8 @@ static const char *find_header(const char *res, const char *header,
 
 
 /*
- * Receives data from the HTTP server.
+ * Receives data from the HTTP server. Use strict chunk framing for responses
+ * whose bodies will be decoded.
  *
  * @param[out] response  if not NULL, this pointer is set to reference
  *                       the new allocated buffer containing the data
@@ -151,8 +152,8 @@ static const char *find_header(const char *res, const char *header,
  * @return     1         in case of success
  *             < 0       in case of error
  */
-int http_receive(struct tunnel *tunnel,
-                 char **response, uint32_t *response_size)
+static int http_receive_with_framing(struct tunnel *tunnel, char **response,
+                                     uint32_t *response_size, bool strict_chunks)
 {
 	uint32_t capacity = HTTP_BUFFER_SIZE;
 	char *buffer;
@@ -172,8 +173,8 @@ int http_receive(struct tunnel *tunnel,
 		                          (uint8_t *) buffer + bytes_read,
 		                          capacity - bytes_read)) == ERR_TLS_AGAIN)
 			;
-		if (n <= 0) {
-			log_debug("Unexpected end of HTTP response (%s).\n",
+		if (n < 0) {
+			log_debug("Error reading from TLS connection (%s).\n",
 			          err_ssl_str(n));
 			free(buffer);
 			return ERR_HTTP_TLS;
@@ -200,13 +201,26 @@ int http_receive(struct tunnel *tunnel,
 				if (header)
 					content_size = strtol(header, NULL, 10);
 
-				chunked = http_transfer_is_chunked(buffer, header_size);
+				if (strict_chunks)
+					chunked = http_transfer_is_chunked(buffer,
+					                                   header_size);
+				else
+					chunked = find_header(buffer, "Transfer-Encoding: chunked",
+					                      header_size) != NULL;
 			}
 		}
 
 		if (header_size) {
 			/* Have we reached the end of the HTTP body? */
-			if (chunked) {
+			if (chunked && !strict_chunks) {
+				static const char EOB[7] = "\r\n0\r\n\r\n";
+
+				/* Legacy endpoints can send loosely framed bodies. */
+				if (bytes_read >= sizeof(EOB) &&
+				    !memcmp(buffer + bytes_read - sizeof(EOB),
+				            EOB, sizeof(EOB)))
+					break;
+			} else if (chunked) {
 				size_t body_size = bytes_read - header_size;
 				const char *body = buffer + header_size;
 
@@ -269,13 +283,19 @@ int http_receive(struct tunnel *tunnel,
 }
 
 
+int http_receive(struct tunnel *tunnel, char **response, uint32_t *response_size)
+{
+	return http_receive_with_framing(tunnel, response, response_size, false);
+}
+
+
 static int do_http_request(struct tunnel *tunnel,
                            const char *method,
                            const char *uri,
                            const char *data,
                            char **response,
-                           uint32_t *response_size
-                          )
+                           uint32_t *response_size,
+                           bool strict_chunks)
 {
 	int ret;
 	const char *template = ("%s %s HTTP/1.1\r\n"
@@ -298,7 +318,7 @@ static int do_http_request(struct tunnel *tunnel,
 	if (ret != 1)
 		return ret;
 
-	return http_receive(tunnel, response, response_size);
+	return http_receive_with_framing(tunnel, response, response_size, strict_chunks);
 }
 
 
@@ -311,26 +331,30 @@ static int do_http_request(struct tunnel *tunnel,
  * @return     1         in case of success
  *             < 0       in case of error
  */
-static int http_request(struct tunnel *tunnel, const char *method,
-                        const char *uri,
-                        const char *data,
-                        char **response,
-                        uint32_t *response_size
-                       )
+static int http_request_with_framing(struct tunnel *tunnel, const char *method,
+                                     const char *uri, const char *data, char **response,
+                                     uint32_t *response_size, bool strict_chunks)
 {
 	int ret;
 
 	ret = do_http_request(tunnel, method, uri, data,
-	                      response, response_size);
+	                      response, response_size, strict_chunks);
 	if (ret == ERR_HTTP_TLS) {
 		ssl_connect(tunnel);
 		ret = do_http_request(tunnel, method, uri, data,
-		                      response, response_size);
+		                      response, response_size, strict_chunks);
 	}
 	if (ret != 1)
 		log_debug("Error issuing %s request\n", uri);
 
 	return ret;
+}
+
+static int http_request(struct tunnel *tunnel, const char *method, const char *uri,
+                        const char *data, char **response, uint32_t *response_size)
+{
+	return http_request_with_framing(tunnel, method, uri, data, response,
+	                                 response_size, false);
 }
 
 
@@ -1005,8 +1029,9 @@ int auth_get_config(struct tunnel *tunnel)
 	int ret;
 
 	if (tunnel->config->ipv6) {
-		ret = http_request(tunnel, "GET", "/remote/fortisslvpn_xml?dual_stack=1",
-		                   "", &buffer, &size);
+		ret = http_request_with_framing(tunnel, "GET",
+		                                "/remote/fortisslvpn_xml?dual_stack=1",
+		                                "", &buffer, &size, true);
 		if (ret != 1)
 			return ret;
 		ret = parse_xml_config(tunnel, buffer, size);
@@ -1015,7 +1040,8 @@ int auth_get_config(struct tunnel *tunnel)
 			return ret;
 	}
 
-	ret = http_request(tunnel, "GET", "/remote/fortisslvpn_xml", "", &buffer, &size);
+	ret = http_request_with_framing(tunnel, "GET", "/remote/fortisslvpn_xml",
+	                                "", &buffer, &size, true);
 	if (ret == 1) {
 		ret = parse_xml_config(tunnel, buffer, size);
 		free(buffer);

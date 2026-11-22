@@ -28,3 +28,6 @@ openfortivpn@.service
 /http-chunks-test
 /http-chunks-test.log
 /http-chunks-test.trs
+/http-requests-test
+/http-requests-test.log
+/http-requests-test.trs

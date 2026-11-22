@@ -1,14 +1,15 @@
 # http://mij.oltrelinux.com/devel/autoconf-automake/
 
 bin_PROGRAMS = openfortivpn
-openfortivpn_SOURCES = src/config.c src/config.h src/hdlc.c src/hdlc.h \
+common_sources = src/config.c src/config.h src/hdlc.c src/hdlc.h \
 		       src/http.c src/http.h src/http_chunks.c src/http_chunks.h \
 		       src/io.c src/io.h \
 			   src/http_server.c src/ipv4.c \
 		       src/ipv4.h src/log.c src/log.h src/tunnel.c \
-		       src/tunnel.h src/main.c src/ssl.h src/xml.c \
+		       src/tunnel.h src/ssl.h src/xml.c \
 		       src/xml.h src/userinput.c src/userinput.h \
 		       src/ipv6.c src/ipv6.h
+openfortivpn_SOURCES = $(common_sources) src/main.c
 openfortivpn_CPPFLAGS = -DSYSCONFDIR=\"$(sysconfdir)\" \
 			-DPPP_PATH=\"@PPP_PATH@\" \
 			-DNETSTAT_PATH=\"@NETSTAT_PATH@\" \
@@ -18,10 +19,15 @@ openfortivpn_CPPFLAGS = -DSYSCONFDIR=\"$(sysconfdir)\" \
 openfortivpn_CFLAGS = -Wall -pedantic
 openfortivpn_LDADD = $(OPENSSL_LIBS) $(LIBSYSTEMD_LIBS) $(LIBXML2_LIBS)
 
-check_PROGRAMS = http-chunks-test
+check_PROGRAMS = http-chunks-test http-requests-test
 TESTS = $(check_PROGRAMS)
 http_chunks_test_SOURCES = tests/http-chunks.c src/http_chunks.c src/http_chunks.h
 http_chunks_test_CPPFLAGS = -I$(srcdir)/src
+
+http_requests_test_SOURCES = tests/http-requests.c $(common_sources)
+http_requests_test_CPPFLAGS = $(openfortivpn_CPPFLAGS) -I$(srcdir)/src \
+			      -DSSL_read=test_SSL_read -DSSL_write=test_SSL_write
+http_requests_test_LDADD = $(openfortivpn_LDADD)
 
 if HAVE_IPV6_TUNNEL
 check_PROGRAMS += ipv6-test
