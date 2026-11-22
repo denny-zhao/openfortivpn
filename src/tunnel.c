@@ -50,6 +50,7 @@
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <netdb.h>
+#include <pthread.h>
 #if HAVE_PTY_H
 #include <pty.h>
 #elif HAVE_UTIL_H
@@ -113,23 +114,44 @@ static int on_ppp_if_up(struct tunnel *tunnel)
 {
 	log_info("Interface %s is UP.\n", tunnel->ppp_iface);
 
-	{
-		/* Drop invalid route by pppd (or tun) in all cases. */
-		int ret = ipv4_drop_wrong_route(tunnel);
+	if (!tunnel->ipv6.only) {
+		{
+			/* Drop invalid route by pppd (or tun) in all cases. */
+			int ret = ipv4_drop_wrong_route(tunnel);
 
-		if (ret != 0)
-			log_warn("Issue occurs while checking for wrong route, continuing anyway.\n");
+			if (ret != 0)
+				log_warn("Issue occurs while checking for wrong route, continuing anyway.\n");
+		}
+
+		if (tunnel->config->set_routes) {
+			int ret;
+
+			log_info("Setting new routes...\n");
+
+			ret = ipv4_set_tunnel_routes(tunnel);
+
+			if (ret != 0)
+				log_warn("Adding route table is incomplete. Please check route table.\n");
+		}
 	}
 
-	if (tunnel->config->set_routes) {
-		int ret;
+	if (!IN6_IS_ADDR_UNSPECIFIED(&tunnel->ipv6.address)) {
+		int result = -1;
+		int cancel_state;
 
-		log_info("Setting new routes...\n");
-
-		ret = ipv4_set_tunnel_routes(tunnel);
-
-		if (ret != 0)
-			log_warn("Adding route table is incomplete. Please check route table.\n");
+		if (ppp_interface_has_ipv6(tunnel)) {
+			pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
+			result = ipv6_configure(&tunnel->ipv6, tunnel->ppp_iface,
+			                        tunnel->config->set_routes);
+			pthread_setcancelstate(cancel_state, NULL);
+		}
+		if (result == 0)
+			log_info("IPv6 tunnel is ready.\n");
+		else if (tunnel->ipv6.only) {
+			log_error("Could not configure the IPv6-only tunnel.\n");
+			return 1;
+		} else
+			log_warn("Could not configure IPv6, continuing with IPv4.\n");
 	}
 
 	if (tunnel->config->set_dns) {
@@ -154,7 +176,7 @@ static int on_ppp_if_down(struct tunnel *tunnel)
 
 	log_info("Setting %s interface down.\n", tunnel->ppp_iface);
 
-	if (tunnel->config->set_routes) {
+	if (!tunnel->ipv6.only && tunnel->config->set_routes) {
 		log_info("Restoring routes...\n");
 		ipv4_restore_routes(tunnel);
 	}
@@ -324,6 +346,12 @@ static int pppd_run(struct tunnel *tunnel)
 				free(pppd_args.data);
 				return 1;
 			}
+		if ((!IN6_IS_ADDR_UNSPECIFIED(&tunnel->ipv6.address)
+		     && ofv_append_varr(&pppd_args, "+ipv6"))
+		    || (tunnel->ipv6.only && ofv_append_varr(&pppd_args, "noip"))) {
+			free(pppd_args.data);
+			return 1;
+		}
 		if (tunnel->config->pppd_use_peerdns)
 			if (ofv_append_varr(&pppd_args, "usepeerdns")) {
 				free(pppd_args.data);
@@ -571,47 +599,75 @@ static int pppd_terminate(struct tunnel *tunnel)
 	return 0;
 }
 
+static bool matches_ipv6cp_address(const struct tunnel *tunnel,
+                                   const struct sockaddr *sockaddr)
+{
+	if (!sockaddr || sockaddr->sa_family != AF_INET6 ||
+	    !atomic_load(&tunnel->ipv6cp_acked))
+		return false;
+	struct in6_addr address = ((const struct sockaddr_in6 *)sockaddr)->sin6_addr;
+
+#ifdef __APPLE__
+	// Darwin can embed the interface scope in the second word.
+	address.s6_addr[2] = address.s6_addr[3] = 0;
+#endif
+	return IN6_IS_ADDR_LINKLOCAL(&address) &&
+	       !memcmp(&tunnel->ipv6_link_local, &address, sizeof(address));
+}
+
 int ppp_interface_is_up(struct tunnel *tunnel)
 {
 	struct ifaddrs *ifap;
+	int ready = 0;
 
-	log_debug("Got Address: %s\n", inet_ntoa(tunnel->ipv4.ip_addr));
-
-	if (getifaddrs(&ifap)) {
-		log_error("getifaddrs: %s\n", strerror(errno));
+	if (getifaddrs(&ifap))
 		return 0;
-	}
-
-	for (struct ifaddrs *ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
-		if (
+	for (struct ifaddrs *ifa = ifap; ifa; ifa = ifa->ifa_next) {
+		if (!ifa->ifa_addr || !(ifa->ifa_flags & IFF_UP))
+			continue;
 #if HAVE_USR_SBIN_PPPD
-		        ((tunnel->config->pppd_ifname &&
-		          strstr(ifa->ifa_name, tunnel->config->pppd_ifname) != NULL) ||
-		         strstr(ifa->ifa_name, "ppp") != NULL) &&
+		if (!(tunnel->config->pppd_ifname &&
+		      strstr(ifa->ifa_name, tunnel->config->pppd_ifname)) &&
+		    !strstr(ifa->ifa_name, "ppp"))
+			continue;
 #endif
 #if HAVE_USR_SBIN_PPP
-		        strstr(ifa->ifa_name, "tun") != NULL &&
+		if (!strstr(ifa->ifa_name, "tun"))
+			continue;
 #endif
-		        ifa->ifa_flags & IFF_UP) {
-			if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET) {
-				struct in_addr if_ip_addr =
-				        cast_addr(ifa->ifa_addr)->sin_addr;
+		if (!tunnel->ipv6.only && ifa->ifa_addr->sa_family == AF_INET) {
+			const struct sockaddr_in *address =
+			        (const struct sockaddr_in *)ifa->ifa_addr;
 
-				log_debug("Interface Name: %s\n", ifa->ifa_name);
-				log_debug("Interface Addr: %s\n", inet_ntoa(if_ip_addr));
-
-				if (tunnel->ipv4.ip_addr.s_addr == if_ip_addr.s_addr) {
-					strncpy(tunnel->ppp_iface, ifa->ifa_name,
-					        ROUTE_IFACE_LEN - 1);
-					freeifaddrs(ifap);
-					return 1;
-				}
-			}
+			ready = tunnel->ipv4.ip_addr.s_addr != INADDR_ANY &&
+			        tunnel->ipv4.ip_addr.s_addr == address->sin_addr.s_addr;
+		} else if (tunnel->ipv6.only) {
+			ready = matches_ipv6cp_address(tunnel, ifa->ifa_addr);
+		}
+		if (ready) {
+			strncpy(tunnel->ppp_iface, ifa->ifa_name, ROUTE_IFACE_LEN - 1);
+			break;
 		}
 	}
 	freeifaddrs(ifap);
+	return ready;
+}
 
-	return 0;
+bool ppp_interface_has_ipv6(const struct tunnel *tunnel)
+{
+	struct ifaddrs *ifap;
+	bool ready = false;
+
+	if (getifaddrs(&ifap))
+		return false;
+	for (const struct ifaddrs *ifa = ifap; ifa; ifa = ifa->ifa_next)
+		if ((ifa->ifa_flags & IFF_UP) && !strcmp(tunnel->ppp_iface, ifa->ifa_name)
+		    && matches_ipv6cp_address(tunnel, ifa->ifa_addr)) {
+			ready = true;
+			break;
+		}
+	freeifaddrs(ifap);
+	return ready;
 }
 
 static int get_gateway_host_ip(struct tunnel *tunnel)
@@ -1176,7 +1232,7 @@ int ssl_connect(struct tunnel *tunnel)
 
 		// Use OSSL_STORE to load certificate and private key from PKCS#11
 		OSSL_STORE_CTX *store_ctx = OSSL_STORE_open(tunnel->config->user_cert,
-		                            NULL, NULL, NULL, NULL);
+		        NULL, NULL, NULL, NULL);
 
 		if (!store_ctx) {
 			log_error("PKCS11 OSSL_STORE_open failed: %s\n",
@@ -1442,6 +1498,7 @@ int run_tunnel(struct vpn_config *config)
 	if (tunnel.state == STATE_UP)
 		if (tunnel.on_ppp_if_down != NULL)
 			tunnel.on_ppp_if_down(&tunnel);
+	ipv6_restore(&tunnel.ipv6, tunnel.ppp_iface);
 
 	tunnel.state = STATE_DISCONNECTING;
 
@@ -1465,5 +1522,7 @@ err_tunnel:
 		free(tunnel.ipv4.split_rt);
 		tunnel.ipv4.split_rt = NULL;
 	}
+	free(tunnel.ipv4.dns_suffix);
+	ipv6_cleanup(&tunnel.ipv6);
 	return ret;
 }

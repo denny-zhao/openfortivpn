@@ -85,6 +85,7 @@ struct vpn_config {
 
 	char			sni[GATEWAY_HOST_SIZE + 1];
 	int			set_routes;
+	int			ipv6;
 	int			set_dns;
 	int			pppd_use_peerdns;
 	int			use_syslog;

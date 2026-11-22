@@ -4,3 +4,6 @@ host = vpn.example.org
 port = 443
 username = vpnuser
 password = VPNpassw0rd
+
+# Request IPv6 configuration when the gateway supports it.
+# ipv6 = 0

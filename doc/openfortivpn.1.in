@@ -118,6 +118,11 @@ is usually what you want.
 \fB\-\-ifname=\fI<interface>\fR
 Bind the connection to the specified network interface.
 .TP
+\fB\-\-ipv6\fR
+Request IPv6 tunnel configuration from the gateway. This option is supported
+on macOS and Linux builds with pppd and libxml2. The gateway must assign an IPv6
+address and support IPv6CP. The TLS connection to the gateway uses IPv4.
+.TP
 \fB\-\-set\-routes=\fI<bool>\fR, \fB\-\-no-routes\fR
 Set if openfortivpn should try to configure IP routes through the VPN when
 tunnel is up. If used multiple times, the last one takes priority.

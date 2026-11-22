@@ -1096,12 +1096,54 @@ static inline char *replace_char(char *str, char find, char replace)
 	return str;
 }
 
+#define DNS_ADDRESS_SIZE (INET6_ADDRSTRLEN + ROUTE_IFACE_LEN)
+
+static void format_ipv6_nameserver(char *address, const struct in6_addr *server,
+                                   const char *iface)
+{
+	if (inet_ntop(AF_INET6, server, address, DNS_ADDRESS_SIZE) &&
+	    IN6_IS_ADDR_LINKLOCAL(server)) {
+		size_t length = strlen(address);
+
+		snprintf(address + length, DNS_ADDRESS_SIZE - length, "%%%s", iface);
+	}
+}
+
+// Keep the first IPv4 and IPv6 servers when both families are available.
+static void format_nameservers(const struct tunnel *tunnel, char *ns1, char *ns2)
+{
+	char addresses[2][DNS_ADDRESS_SIZE] = {{0}};
+	const struct in_addr ipv4[] = {tunnel->ipv4.ns1_addr, tunnel->ipv4.ns2_addr};
+	size_t next = 0;
+
+	if (!tunnel->ipv6.only && ipv4[0].s_addr)
+		inet_ntop(AF_INET, &ipv4[0], addresses[next++], sizeof(addresses[0]));
+	if (tunnel->ipv6.ready && tunnel->ipv6.dns_count)
+		format_ipv6_nameserver(addresses[next++], &tunnel->ipv6.dns[0],
+		                       tunnel->ppp_iface);
+	if (next < 2 && !tunnel->ipv6.only && ipv4[1].s_addr)
+		inet_ntop(AF_INET, &ipv4[1], addresses[next++], sizeof(addresses[0]));
+	if (next < 2 && tunnel->ipv6.ready && tunnel->ipv6.dns_count > 1)
+		format_ipv6_nameserver(addresses[next++], &tunnel->ipv6.dns[1],
+		                       tunnel->ppp_iface);
+
+	ns1[0] = ns2[0] = '\0';
+	if (addresses[0][0]) {
+		strcpy(ns1, "nameserver ");
+		strcat(ns1, addresses[0]);
+	}
+	if (addresses[1][0]) {
+		strcpy(ns2, "nameserver ");
+		strcat(ns2, addresses[1]);
+	}
+}
+
 int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 {
 	int ret = -1;
 	FILE *file;
 	struct stat stat;
-#define NS_SIZE ARRAY_SIZE("nameserver xxx.xxx.xxx.xxx\n")
+#define NS_SIZE (ARRAY_SIZE("nameserver \n") + DNS_ADDRESS_SIZE)
 	char ns1[NS_SIZE], ns2[NS_SIZE];
 #undef NS_SIZE
 #define DNS_SUFFIX_SIZE (ARRAY_SIZE("search \n") + MAX_DOMAIN_LENGTH)
@@ -1116,10 +1158,10 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 	tunnel->ipv4.ns2_was_there = 0;
 	tunnel->ipv4.dns_suffix_was_there = 0;
 
-	if (tunnel->ipv4.ns1_addr.s_addr == 0)
+	format_nameservers(tunnel, ns1, ns2);
+	if (!ns1[0])
 		tunnel->ipv4.ns1_was_there = -1;
-
-	if (tunnel->ipv4.ns2_addr.s_addr == 0)
+	if (!ns2[0])
 		tunnel->ipv4.ns2_was_there = -1;
 
 #if HAVE_RESOLVCONF
@@ -1193,20 +1235,6 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 #if HAVE_RESOLVCONF
 	}
 #endif
-	if (tunnel->ipv4.ns1_addr.s_addr != 0) {
-		strcpy(ns1, "nameserver ");
-		strncat(ns1, inet_ntoa(tunnel->ipv4.ns1_addr), 15);
-	} else {
-		ns1[0] = '\0';
-	}
-
-	if (tunnel->ipv4.ns2_addr.s_addr != 0) {
-		strcpy(ns2, "nameserver ");
-		strncat(ns2, inet_ntoa(tunnel->ipv4.ns2_addr), 15);
-	} else {
-		ns2[0] = '\0';
-	}
-
 	if (tunnel->ipv4.dns_suffix != NULL) {
 		strcpy(dns_suffix, "search ");
 		strncat(dns_suffix, tunnel->ipv4.dns_suffix, MAX_DOMAIN_LENGTH);
@@ -1317,7 +1345,7 @@ int ipv4_del_nameservers_from_resolv_conf(struct tunnel *tunnel)
 	int ret = -1;
 	FILE *file;
 	struct stat stat;
-#define NS_SIZE ARRAY_SIZE("nameserver xxx.xxx.xxx.xxx")
+#define NS_SIZE (ARRAY_SIZE("nameserver ") + DNS_ADDRESS_SIZE)
 	char ns1[NS_SIZE], ns2[NS_SIZE];
 #undef NS_SIZE
 #define DNS_SUFFIX_SIZE (ARRAY_SIZE("search ") + MAX_DOMAIN_LENGTH)
@@ -1385,16 +1413,7 @@ int ipv4_del_nameservers_from_resolv_conf(struct tunnel *tunnel)
 
 	buffer[stat.st_size] = '\0';
 
-	ns1[0] = '\0';
-	if (tunnel->ipv4.ns1_addr.s_addr != 0) {
-		strcpy(ns1, "nameserver ");
-		strncat(ns1, inet_ntoa(tunnel->ipv4.ns1_addr), 15);
-	}
-	ns2[0] = '\0';
-	if (tunnel->ipv4.ns2_addr.s_addr != 0) {
-		strcpy(ns2, "nameserver ");
-		strncat(ns2, inet_ntoa(tunnel->ipv4.ns2_addr), 15);
-	}
+	format_nameservers(tunnel, ns1, ns2);
 	dns_suffix[0] = '\0';
 	if (tunnel->ipv4.dns_suffix != NULL && tunnel->ipv4.dns_suffix[0] != '\0') {
 		strcpy(dns_suffix, "search ");

@@ -878,6 +878,7 @@ static int parse_xml_config(struct tunnel *tunnel, const char *buffer)
 	const char *val;
 	char *gateway;
 	char *dns_server;
+	char *ipv4_xml = NULL;
 	int ret = 0;
 
 	if (strncmp(buffer, "HTTP/1.1 200 OK\r\n", 17)) {
@@ -890,6 +891,21 @@ static int parse_xml_config(struct tunnel *tunnel, const char *buffer)
 
 	// Skip the HTTP header
 	buffer = strstr(buffer, "\r\n\r\n");
+	if (!buffer)
+		return ERR_HTTP_BAD_RES_CODE;
+	if (tunnel->config->ipv6) {
+		ret = ipv6_parse_config(&tunnel->ipv6, buffer + 4, &ipv4_xml);
+		if (ret < 0)
+			log_warn("Could not read IPv6 tunnel configuration.\n");
+		else if (ret == 0)
+			log_info("Gateway did not assign an IPv6 address.\n");
+		if (tunnel->ipv6.only) {
+			free(ipv4_xml);
+			return 1;
+		}
+		if (ipv4_xml)
+			buffer = ipv4_xml;
+	}
 
 	// The address of a local end of a router
 	val = xml_find('<', "assigned-addr", buffer, 1);
@@ -915,10 +931,14 @@ static int parse_xml_config(struct tunnel *tunnel, const char *buffer)
 		if (xml_find(' ', "ip=", val, 1)) {
 			dns_server = xml_get(xml_find(' ', "ip=", val, 1));
 			log_debug("Found dns server %s in xml config\n", dns_server);
-			if (!tunnel->ipv4.ns1_addr.s_addr)
-				tunnel->ipv4.ns1_addr.s_addr = inet_addr(dns_server);
-			else if (!tunnel->ipv4.ns2_addr.s_addr)
-				tunnel->ipv4.ns2_addr.s_addr = inet_addr(dns_server);
+			struct in_addr address;
+
+			if (dns_server && inet_pton(AF_INET, dns_server, &address) == 1) {
+				if (!tunnel->ipv4.ns1_addr.s_addr)
+					tunnel->ipv4.ns1_addr = address;
+				else if (!tunnel->ipv4.ns2_addr.s_addr)
+					tunnel->ipv4.ns2_addr = address;
+			}
 			free(dns_server);
 		}
 	}
@@ -948,6 +968,7 @@ static int parse_xml_config(struct tunnel *tunnel, const char *buffer)
 	}
 
 	free(gateway);
+	free(ipv4_xml);
 
 	return 1;
 }
@@ -957,6 +978,17 @@ int auth_get_config(struct tunnel *tunnel)
 {
 	char *buffer;
 	int ret;
+
+	if (tunnel->config->ipv6) {
+		ret = http_request(tunnel, "GET", "/remote/fortisslvpn_xml?dual_stack=1",
+		                   "", &buffer, NULL);
+		if (ret != 1)
+			return ret;
+		ret = parse_xml_config(tunnel, buffer);
+		free(buffer);
+		if (ret != 400 && ret != 404 && ret != 405)
+			return ret;
+	}
 
 	ret = http_request(tunnel, "GET", "/remote/fortisslvpn_xml", "", &buffer, NULL);
 	if (ret == 1) {

@@ -32,6 +32,9 @@
 #include "config.h"
 #include "io.h"
 #include "ipv4.h"
+#include "ipv6.h"
+
+#include <stdatomic.h>
 
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
@@ -72,6 +75,9 @@ struct tunnel {
 	SSL	*ssl_handle;
 
 	struct ipv4_config ipv4;
+	struct ipv6_config ipv6;
+	struct in6_addr ipv6_link_local;
+	atomic_bool ipv6cp_acked;
 
 	int (*on_ppp_if_up)(struct tunnel *tunnel);
 	int (*on_ppp_if_down)(struct tunnel *tunnel);
@@ -83,6 +89,7 @@ struct token {
 };
 
 int ppp_interface_is_up(struct tunnel *tunnel);
+bool ppp_interface_has_ipv6(const struct tunnel *tunnel);
 
 int ssl_connect(struct tunnel *tunnel);
 

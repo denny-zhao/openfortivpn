@@ -81,7 +81,7 @@
 "                    [--cookie=<cookie>] [--cookie-on-stdin] [--saml-login]\n" \
 "                    [--otp=<otp>] [--otp-delay=<delay>] [--otp-prompt=<prompt>]\n" \
 "                    [--pinentry=<program>] [--realm=<realm>]\n" \
-"                    [--ifname=<ifname>] [--set-routes=<0|1>]\n" \
+"                    [--ifname=<ifname>] [--set-routes=<0|1>] [--ipv6]\n" \
 "                    [--half-internet-routes=<0|1>] [--set-dns=<0|1>]\n" \
 PPPD_USAGE \
 "                    " RESOLVCONF_USAGE "[--ca-file=<file>]\n" \
@@ -126,6 +126,7 @@ PPPD_USAGE \
 "  --pinentry=<program>          Use the program to supply a secret instead of asking for it.\n" \
 "  --realm=<realm>               Use specified authentication realm.\n" \
 "  --ifname=<interface>          Bind to interface.\n" \
+"  --ipv6                       Request IPv6 tunnel configuration.\n" \
 "  --set-routes=[01]             Set if openfortivpn should configure routes\n" \
 "                                when tunnel is up.\n"               \
 "  --sni=<sni>                   Specify a different server name (SNI) than the host argument\n" \
@@ -238,6 +239,7 @@ int main(int argc, char *argv[])
 		.iface_name = {'\0'},
 		.sni = {'\0'},
 		.set_routes = 1,
+		.ipv6 = 0,
 		.set_dns = 1,
 		.use_syslog = 0,
 		.half_internet_routes = 0,
@@ -298,6 +300,7 @@ int main(int argc, char *argv[])
 		{"ifname",               required_argument, NULL, 0},
 		{"set-routes",	         required_argument, NULL, 0},
 		{"sni",                  required_argument, NULL, 0},
+		{"ipv6",                 no_argument, &cli_cfg.ipv6, 1},
 		{"no-routes",            no_argument, &cli_cfg.set_routes, 0},
 		{"half-internet-routes", required_argument, NULL, 0},
 		{"set-dns",              required_argument, NULL, 0},
@@ -684,6 +687,12 @@ int main(int argc, char *argv[])
 
 	// Then apply CLI configuration
 	merge_config(&cfg, &cli_cfg);
+#if !HAVE_IPV6_TUNNEL
+	if (cfg.ipv6) {
+		log_warn("IPv6 tunnel support is unavailable in this build.\n");
+		cfg.ipv6 = 0;
+	}
+#endif
 	set_syslog(cfg.use_syslog);
 
 	// Set default UA

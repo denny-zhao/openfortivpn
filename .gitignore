@@ -18,3 +18,9 @@ doc/*.1
 config.sub
 config.guess
 openfortivpn@.service
+
+/ipv6-test
+/ipv6-test.log
+/ipv6-test.trs
+/test-driver
+/test-suite.log

@@ -56,6 +56,7 @@ const struct vpn_config invalid_cfg = {
 	.iface_name = {'\0'},
 	.sni = {'\0'},
 	.set_routes = -1,
+	.ipv6 = -1,
 	.set_dns = -1,
 	.pppd_use_peerdns = -1,
 #if HAVE_RESOLVCONF
@@ -306,6 +307,14 @@ int load_config(struct vpn_config *cfg, const char *filename)
 		} else if (strcmp(key, "sni") == 0) {
 			strncpy(cfg->sni, val, GATEWAY_HOST_SIZE);
 			cfg->sni[GATEWAY_HOST_SIZE] = '\0';
+		} else if (strcmp(key, "ipv6") == 0) {
+			int ipv6 = strtob(val);
+
+			if (ipv6 == 0 || ipv6 == 1)
+				cfg->ipv6 = ipv6;
+			else
+				log_warn("Bad ipv6 option in configuration file: \"%s\".\n",
+				         val);
 		} else if (strcmp(key, "set-routes") == 0) {
 			int set_routes = strtob(val);
 
@@ -556,6 +565,8 @@ void merge_config(struct vpn_config *dst, struct vpn_config *src)
 		strcpy(dst->iface_name, src->iface_name);
 	if (src->sni[0])
 		strcpy(dst->sni, src->sni);
+	if (src->ipv6 != invalid_cfg.ipv6)
+		dst->ipv6 = src->ipv6;
 	if (src->set_routes != invalid_cfg.set_routes)
 		dst->set_routes = src->set_routes;
 	if (src->set_dns != invalid_cfg.set_dns)

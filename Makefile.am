@@ -6,15 +6,24 @@ openfortivpn_SOURCES = src/config.c src/config.h src/hdlc.c src/hdlc.h \
 			   src/http_server.c src/ipv4.c \
 		       src/ipv4.h src/log.c src/log.h src/tunnel.c \
 		       src/tunnel.h src/main.c src/ssl.h src/xml.c \
-		       src/xml.h src/userinput.c src/userinput.h
+		       src/xml.h src/userinput.c src/userinput.h \
+		       src/ipv6.c src/ipv6.h
 openfortivpn_CPPFLAGS = -DSYSCONFDIR=\"$(sysconfdir)\" \
 			-DPPP_PATH=\"@PPP_PATH@\" \
 			-DNETSTAT_PATH=\"@NETSTAT_PATH@\" \
 			-DRESOLVCONF_PATH=\"@RESOLVCONF_PATH@\" \
 			-DREVISION=\"@REVISION@\" \
-			 $(OPENSSL_CFLAGS) $(LIBSYSTEMD_CFLAGS)
+			 $(OPENSSL_CFLAGS) $(LIBSYSTEMD_CFLAGS) $(LIBXML2_CFLAGS)
 openfortivpn_CFLAGS = -Wall -pedantic
-openfortivpn_LDADD = $(OPENSSL_LIBS) $(LIBSYSTEMD_LIBS)
+openfortivpn_LDADD = $(OPENSSL_LIBS) $(LIBSYSTEMD_LIBS) $(LIBXML2_LIBS)
+
+if HAVE_IPV6_TUNNEL
+check_PROGRAMS = ipv6-test
+TESTS = $(check_PROGRAMS)
+ipv6_test_SOURCES = tests/ipv6.c src/ipv6.c src/ipv6.h
+ipv6_test_CPPFLAGS = -I$(srcdir)/src $(LIBXML2_CFLAGS)
+ipv6_test_LDADD = $(LIBXML2_LIBS)
+endif
 
 PATHFILES =
 CLEAN_LOCALS =

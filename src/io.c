@@ -89,7 +89,7 @@ static unsigned long thread_id(void)
 static void init_ssl_locks(void)
 {
 	lockarray = (pthread_mutex_t *) OPENSSL_malloc(CRYPTO_num_locks() *
-	            sizeof(pthread_mutex_t));
+	        sizeof(pthread_mutex_t));
 	for (int i = 0; i < CRYPTO_num_locks(); i++)
 		pthread_mutex_init(&lockarray[i], NULL);
 	CRYPTO_set_id_callback((unsigned long (*)()) thread_id);
@@ -514,7 +514,15 @@ static void *ssl_read(void *arg)
 				strcat(line, "]");
 				log_info("Got addresses: %s\n", line);
 			}
-			if (packet_is_end_negociation(packet)) {
+			if (!IN6_IS_ADDR_UNSPECIFIED(&tunnel->ipv6.address) &&
+			    !atomic_load(&tunnel->ipv6cp_acked) &&
+			    ipv6cp_ack_address(pkt_data(packet), packet->len,
+			                       &tunnel->ipv6_link_local)) {
+				atomic_store(&tunnel->ipv6cp_acked, true);
+				if (tunnel->ipv6.only)
+					SEM_POST(&sem_if_config);
+			}
+			if (!tunnel->ipv6.only && packet_is_end_negociation(packet)) {
 				log_info("Negotiation complete.\n");
 				SEM_POST(&sem_if_config);
 			}
@@ -578,14 +586,22 @@ static void *if_config(void *arg)
 {
 	struct tunnel *tunnel = (struct tunnel *) arg;
 	int timeout = 60000000; // one minute
+	int ipv6_wait = 25;     // up to five additional seconds for IPv6CP
 
 	log_debug("%s thread\n", __func__);
 
 	// Wait for the right moment to configure IP interface
 	SEM_WAIT(&sem_if_config);
+	pthread_testcancel();
 
 	while (1) {
 		if (ppp_interface_is_up(tunnel)) {
+			if (!tunnel->ipv6.only &&
+			    !IN6_IS_ADDR_UNSPECIFIED(&tunnel->ipv6.address)
+			    && !ppp_interface_has_ipv6(tunnel) && ipv6_wait-- > 0) {
+				usleep(200000);
+				continue;
+			}
 			if (tunnel->on_ppp_if_up != NULL)
 				if (tunnel->on_ppp_if_up(tunnel))
 					goto error;
@@ -718,6 +734,8 @@ int io_loop(struct tunnel *tunnel)
 	log_info("Cancelling threads...\n");
 	// no goto err_thread here, try to cancel all threads
 	ret = pthread_cancel(if_config_thread);
+	/* Mach semaphore_wait need not respond to pthread cancellation. */
+	SEM_POST(&sem_if_config);
 	if (ret != 0)
 		log_debug("Error canceling if_config_thread: %s\n", strerror(ret));
 

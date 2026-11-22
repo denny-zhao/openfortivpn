@@ -12,6 +12,7 @@ AC_PROG_MKDIR_P
 AC_PROG_SED
 AC_PROG_INSTALL
 AC_USE_SYSTEM_EXTENSIONS
+AC_CANONICAL_HOST
 m4_ifndef([PKG_PROG_PKG_CONFIG], [m4_fatal([Please install pkg-config.])])
 PKG_PROG_PKG_CONFIG
 
@@ -344,6 +345,24 @@ AS_IF([test "x$enable_proc" = "xyes"], [
 	AC_DEFINE(HAVE_PROC_NET_ROUTE, 0)
 	AC_MSG_NOTICE([HAVE_PROC_NET_ROUTE... 0])
 ])
+
+have_ipv6_tunnel=no
+AS_IF([test "x$with_pppd" = "xyes"], [
+	AS_CASE([$host_os],
+		[darwin*], [have_ipv6_tunnel=yes],
+		[linux*], [
+			AC_PATH_PROG([IP_PATH], [ip], [], [/usr/sbin:/sbin:/usr/bin:/bin])
+			AS_IF([test -n "$IP_PATH"], [have_ipv6_tunnel=yes])
+		])
+])
+AS_IF([test "x$have_ipv6_tunnel" = "xyes"], [
+	PKG_CHECK_MODULES([LIBXML2], [libxml-2.0], [], [have_ipv6_tunnel=no])
+])
+AS_IF([test "x$have_ipv6_tunnel" = "xyes"], [
+	AC_DEFINE([HAVE_IPV6_TUNNEL], [1], [Build IPv6 tunnel support])
+	AC_DEFINE_UNQUOTED([IP_PATH], ["$IP_PATH"], [Path to Linux ip command])
+])
+AM_CONDITIONAL([HAVE_IPV6_TUNNEL], [test "x$have_ipv6_tunnel" = "xyes"])
 
 AC_SUBST(PPP_PATH)
 AC_MSG_NOTICE([PPP_PATH...] $PPP_PATH)
