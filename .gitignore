@@ -24,3 +24,7 @@ openfortivpn@.service
 /ipv6-test.trs
 /test-driver
 /test-suite.log
+
+/http-chunks-test
+/http-chunks-test.log
+/http-chunks-test.trs

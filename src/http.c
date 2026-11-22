@@ -16,6 +16,7 @@
  */
 
 #include "http.h"
+#include "http_chunks.h"
 #include "xml.h"
 #include "ssl.h"
 #include "ipv4.h"
@@ -171,8 +172,8 @@ int http_receive(struct tunnel *tunnel,
 		                          (uint8_t *) buffer + bytes_read,
 		                          capacity - bytes_read)) == ERR_TLS_AGAIN)
 			;
-		if (n < 0) {
-			log_debug("Error reading from TLS connection (%s).\n",
+		if (n <= 0) {
+			log_debug("Unexpected end of HTTP response (%s).\n",
 			          err_ssl_str(n));
 			free(buffer);
 			return ERR_HTTP_TLS;
@@ -199,23 +200,28 @@ int http_receive(struct tunnel *tunnel,
 				if (header)
 					content_size = strtol(header, NULL, 10);
 
-				if (find_header(buffer,
-				                "Transfer-Encoding: chunked",
-				                header_size))
-					chunked = 1;
+				chunked = http_transfer_is_chunked(buffer, header_size);
 			}
 		}
 
 		if (header_size) {
 			/* Have we reached the end of the HTTP body? */
 			if (chunked) {
-				static const char EOB[7] = "\r\n0\r\n\r\n";
+				size_t body_size = bytes_read - header_size;
+				const char *body = buffer + header_size;
 
-				/* Last chunk terminator. Done naively. */
-				if (bytes_read >= sizeof(EOB) &&
-				    !memcmp(&buffer[bytes_read - sizeof(EOB)],
-				            EOB, sizeof(EOB)))
-					break;
+				/* An empty line may be part of chunk data. */
+				if (body_size >= 4 &&
+				    !memcmp(body + body_size - 4, "\r\n\r\n", 4)) {
+					enum http_chunk_status status;
+					status = http_scan_chunks(body, body_size);
+					if (status == HTTP_CHUNKS_COMPLETE)
+						break;
+					if (status == HTTP_CHUNKS_INVALID) {
+						free(buffer);
+						return ERR_HTTP_INVALID;
+					}
+				}
 			} else {
 				if (bytes_read >= header_size + content_size)
 					break;
@@ -252,7 +258,7 @@ int http_receive(struct tunnel *tunnel,
 	if (response == NULL) {
 		free(buffer);
 	} else {
-		assert(bytes_read < capacity);
+		assert(bytes_read <= capacity);
 		buffer[bytes_read] = '\0';
 		*response = buffer;
 
@@ -873,33 +879,50 @@ int auth_request_vpn_allocation(struct tunnel *tunnel)
 }
 
 
-static int parse_xml_config(struct tunnel *tunnel, const char *buffer)
+static int parse_xml_config(struct tunnel *tunnel, const char *response,
+                            uint32_t response_size)
 {
+	const char *buffer;
 	const char *val;
 	char *gateway;
+	char *decoded = NULL;
 	char *dns_server;
 	char *ipv4_xml = NULL;
 	int ret = 0;
 
-	if (strncmp(buffer, "HTTP/1.1 200 OK\r\n", 17)) {
+	if (strncmp(response, "HTTP/1.1 200 OK\r\n", 17)) {
 		char word[17];
 
-		if (sscanf(buffer, "%16s %d", word, &ret) < 2)
+		if (sscanf(response, "%16s %d", word, &ret) < 2)
 			ret = ERR_HTTP_BAD_RES_CODE;
 		return ret;
 	}
 
-	// Skip the HTTP header
-	buffer = strstr(buffer, "\r\n\r\n");
+	buffer = strstr(response, "\r\n\r\n");
 	if (!buffer)
 		return ERR_HTTP_BAD_RES_CODE;
+	buffer += 4;
+	size_t header_size = buffer - response;
+	if (header_size >= response_size)
+		return ERR_HTTP_BAD_RES_CODE;
+	bool chunked = http_transfer_is_chunked(response, header_size);
+	if (chunked) {
+		size_t body_size = response_size - header_size - 1;
+
+		if (http_decode_chunks(buffer, body_size, &decoded)) {
+			log_warn("Could not decode chunked tunnel configuration.\n");
+			return ERR_HTTP_INVALID;
+		}
+		buffer = decoded;
+	}
 	if (tunnel->config->ipv6) {
-		ret = ipv6_parse_config(&tunnel->ipv6, buffer + 4, &ipv4_xml);
+		ret = ipv6_parse_config(&tunnel->ipv6, buffer, &ipv4_xml);
 		if (ret < 0)
 			log_warn("Could not read IPv6 tunnel configuration.\n");
 		else if (ret == 0)
 			log_info("Gateway did not assign an IPv6 address.\n");
 		if (tunnel->ipv6.only) {
+			free(decoded);
 			free(ipv4_xml);
 			return 1;
 		}
@@ -968,6 +991,7 @@ static int parse_xml_config(struct tunnel *tunnel, const char *buffer)
 	}
 
 	free(gateway);
+	free(decoded);
 	free(ipv4_xml);
 
 	return 1;
@@ -977,22 +1001,23 @@ static int parse_xml_config(struct tunnel *tunnel, const char *buffer)
 int auth_get_config(struct tunnel *tunnel)
 {
 	char *buffer;
+	uint32_t size;
 	int ret;
 
 	if (tunnel->config->ipv6) {
 		ret = http_request(tunnel, "GET", "/remote/fortisslvpn_xml?dual_stack=1",
-		                   "", &buffer, NULL);
+		                   "", &buffer, &size);
 		if (ret != 1)
 			return ret;
-		ret = parse_xml_config(tunnel, buffer);
+		ret = parse_xml_config(tunnel, buffer, size);
 		free(buffer);
 		if (ret != 400 && ret != 404 && ret != 405)
 			return ret;
 	}
 
-	ret = http_request(tunnel, "GET", "/remote/fortisslvpn_xml", "", &buffer, NULL);
+	ret = http_request(tunnel, "GET", "/remote/fortisslvpn_xml", "", &buffer, &size);
 	if (ret == 1) {
-		ret = parse_xml_config(tunnel, buffer);
+		ret = parse_xml_config(tunnel, buffer, size);
 		free(buffer);
 	}
 

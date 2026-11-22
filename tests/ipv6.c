@@ -1,7 +1,9 @@
 #include "ipv6.h"
+#include "http_chunks.h"
 
 #include <arpa/inet.h>
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -36,6 +38,31 @@ int main(void)
 	assert(!config.full_tunnel);
 	free(ipv4);
 	ipv6_cleanup(&config);
+
+	char wire[1024];
+	char *xml = NULL;
+	size_t split = 50;
+
+	snprintf(wire, sizeof(wire), "%zx\r\n%.*s\r\n%zx\r\n%s\r\n0\r\n\r\n",
+	         split, (int)split, dual_stack, strlen(dual_stack) - split,
+	         dual_stack + split);
+	assert(http_decode_chunks(wire, strlen(wire), &xml) == 0);
+	assert(ipv6_parse_config(&config, xml, &ipv4) == 1);
+	assert(config.prefix_len == 64);
+	free(xml);
+	free(ipv4);
+	ipv6_cleanup(&config);
+
+	const char *ipv4_only =
+	        "<?xml version='1.0'?><sslvpn-tunnel>"
+	        "<ipv4><assigned-addr ipv4='192.0.2.4'/></ipv4></sslvpn-tunnel>";
+
+	snprintf(wire, sizeof(wire), "%zx   \r\n%s\r\n0\r\n\r\n",
+	         strlen(ipv4_only), ipv4_only);
+	assert(http_decode_chunks(wire, strlen(wire), &xml) == 0);
+	assert(ipv6_parse_config(&config, xml, &ipv4) == 0);
+	assert(config.route_count == 0 && ipv4 == NULL);
+	free(xml);
 
 	const char *native =
 	        "<sslvpn-tunnel><ipv6><assigned-addr ipv6='fd00::5'/>"

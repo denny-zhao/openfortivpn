@@ -2,7 +2,8 @@
 
 bin_PROGRAMS = openfortivpn
 openfortivpn_SOURCES = src/config.c src/config.h src/hdlc.c src/hdlc.h \
-		       src/http.c src/http.h src/io.c src/io.h \
+		       src/http.c src/http.h src/http_chunks.c src/http_chunks.h \
+		       src/io.c src/io.h \
 			   src/http_server.c src/ipv4.c \
 		       src/ipv4.h src/log.c src/log.h src/tunnel.c \
 		       src/tunnel.h src/main.c src/ssl.h src/xml.c \
@@ -17,10 +18,14 @@ openfortivpn_CPPFLAGS = -DSYSCONFDIR=\"$(sysconfdir)\" \
 openfortivpn_CFLAGS = -Wall -pedantic
 openfortivpn_LDADD = $(OPENSSL_LIBS) $(LIBSYSTEMD_LIBS) $(LIBXML2_LIBS)
 
-if HAVE_IPV6_TUNNEL
-check_PROGRAMS = ipv6-test
+check_PROGRAMS = http-chunks-test
 TESTS = $(check_PROGRAMS)
-ipv6_test_SOURCES = tests/ipv6.c src/ipv6.c src/ipv6.h
+http_chunks_test_SOURCES = tests/http-chunks.c src/http_chunks.c src/http_chunks.h
+http_chunks_test_CPPFLAGS = -I$(srcdir)/src
+
+if HAVE_IPV6_TUNNEL
+check_PROGRAMS += ipv6-test
+ipv6_test_SOURCES = tests/ipv6.c src/ipv6.c src/ipv6.h src/http_chunks.c src/http_chunks.h
 ipv6_test_CPPFLAGS = -I$(srcdir)/src $(LIBXML2_CFLAGS)
 ipv6_test_LDADD = $(LIBXML2_LIBS)
 endif
