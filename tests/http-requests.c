@@ -50,6 +50,26 @@ static void use_fixtures(const struct response_fixture *responses, size_t count)
 	sent = read_index = 0;
 }
 
+static void test_dual_stack_rejection(struct vpn_config *config, const char *denial)
+{
+	struct tunnel tunnel = {.config = config};
+	const char xml[] = "<sslvpn-tunnel><assigned-addr ipv4='192.0.2.4'/>"
+	                   "<dns ip='192.0.2.54'/></sslvpn-tunnel>";
+	char response[160];
+
+	snprintf(response, sizeof(response), "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n\r\n%s",
+	         strlen(xml), xml);
+	const struct response_fixture rejection[] = {
+		{"GET /remote/fortisslvpn_xml?dual_stack=1 HTTP/1.1\r\n", {denial}},
+		{"GET /remote/fortisslvpn_xml HTTP/1.1\r\n", {response}},
+	};
+	use_fixtures(rejection, ARRAY_SIZE(rejection));
+	assert(auth_get_config(&tunnel) == 1);
+	assert(sent == ARRAY_SIZE(rejection));
+	assert(tunnel.ipv4.ns1_addr.s_addr == inet_addr("192.0.2.54"));
+	assert(IN6_IS_ADDR_UNSPECIFIED(&tunnel.ipv6.address));
+}
+
 int main(void)
 {
 	struct vpn_config config = {
@@ -76,6 +96,23 @@ int main(void)
 	use_fixtures(allocation, ARRAY_SIZE(allocation));
 	assert(auth_request_vpn_allocation(&tunnel) == 1);
 	assert(sent == ARRAY_SIZE(allocation));
+
+	test_dual_stack_rejection(&config,
+	                          "HTTP/1.1 403 Permission denied\r\nContent-Length: 0\r\n\r\n");
+	test_dual_stack_rejection(&config,
+	                          "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+	test_dual_stack_rejection(&config,
+	                          "HTTP/1.1 501 Not Implemented\r\nContent-Length: 0\r\n\r\n");
+
+	const struct response_fixture expired_session[] = {
+		{
+			"GET /remote/fortisslvpn_xml?dual_stack=1 HTTP/1.1\r\n",
+			{"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n"}
+		},
+	};
+	use_fixtures(expired_session, ARRAY_SIZE(expired_session));
+	assert(auth_get_config(&tunnel) == 401);
+	assert(sent == ARRAY_SIZE(expired_session));
 
 	/* A terminator-shaped sequence inside XML data must not end a TLS read. */
 	const char xml_start[] = "<sslvpn-tunnel><!--\r\n0\r\n\r\n";

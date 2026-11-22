@@ -1022,30 +1022,32 @@ static int parse_xml_config(struct tunnel *tunnel, const char *response,
 }
 
 
-int auth_get_config(struct tunnel *tunnel)
+static int request_xml_config(struct tunnel *tunnel, const char *uri)
 {
 	char *buffer;
 	uint32_t size;
-	int ret;
+	int ret = http_request_with_framing(tunnel, "GET", uri, "", &buffer, &size, true);
 
-	if (tunnel->config->ipv6) {
-		ret = http_request_with_framing(tunnel, "GET",
-		                                "/remote/fortisslvpn_xml?dual_stack=1",
-		                                "", &buffer, &size, true);
-		if (ret != 1)
-			return ret;
-		ret = parse_xml_config(tunnel, buffer, size);
-		free(buffer);
-		if (ret != 400 && ret != 404 && ret != 405)
-			return ret;
-	}
-
-	ret = http_request_with_framing(tunnel, "GET", "/remote/fortisslvpn_xml",
-	                                "", &buffer, &size, true);
 	if (ret == 1) {
 		ret = parse_xml_config(tunnel, buffer, size);
 		free(buffer);
 	}
 
 	return ret;
+}
+
+
+int auth_get_config(struct tunnel *tunnel)
+{
+	if (tunnel->config->ipv6) {
+		int ret = request_xml_config(tunnel, "/remote/fortisslvpn_xml?dual_stack=1");
+
+		if (ret != 400 && ret != 403 && ret != 404 && ret != 405 && ret != 501 &&
+		    ret != ERR_HTTP_PERMISSION)
+			return ret;
+		log_info("Gateway declined dual-stack configuration. "
+		         "Retrying the standard configuration request.\n");
+	}
+
+	return request_xml_config(tunnel, "/remote/fortisslvpn_xml");
 }
